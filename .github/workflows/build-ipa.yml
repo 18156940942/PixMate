@@ -9,7 +9,9 @@ on:
 jobs:
   build:
     # 免费额度内的 macOS 机器（GitHub 公共仓库完全免费）
-    runs-on: macos-14
+    # 用 macos-15：自带 Xcode 16.x，能识别 XcodeGen 新版生成的工程格式(77)。
+    # 早期用 macos-14(Xcode 15.4) 会报「future Xcode project file format (77)」。
+    runs-on: macos-15
     timeout-minutes: 30
 
     steps:
@@ -18,14 +20,26 @@ jobs:
 
       - name: 确认 Xcode
         run: |
-          sudo xcode-select -s /Applications/Xcode.app
+          # 优先选系统里版本最高的 Xcode（macos-15 上通常为 16.x）
+          NEWEST=$(ls -d /Applications/Xcode_*.app 2>/dev/null | sort -V | tail -1)
+          if [ -n "$NEWEST" ]; then
+            echo "使用 $NEWEST"
+            sudo xcode-select -s "$NEWEST"
+          else
+            sudo xcode-select -s /Applications/Xcode.app
+          fi
           xcodebuild -version
 
       - name: 安装 XcodeGen
         run: brew install xcodegen
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: 1
 
       - name: 生成 Xcode 工程
-        run: xcodegen generate
+        run: |
+          xcodegen generate
+          echo "--- 生成的工程格式 ---"
+          grep -m1 "objectVersion" PixMate.xcodeproj/project.pbxproj || true
 
       # 不签名打包：产物是未签名 ipa，装到手机时由 Sideloadly / AltStore
       # 用你的 Apple ID 重新签名（免费账号 7 天有效期）

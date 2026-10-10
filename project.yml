@@ -7,6 +7,11 @@ options:
   createIntermediateGroups: true
   groupSortPosition: top
   generateEmptyDirectories: false
+  # 显式固定工程文件格式为 Xcode 15.3。
+  # XcodeGen 默认值是 xcode16_0（objectVersion 77），Xcode 15.4 会直接报
+  # 「future Xcode project file format (77)」而无法打开。锁定 15.3 后
+  # macos-14(15.4) 与 macos-15(16.x) 两种 runner 都能正常读取。
+  projectFormat: xcode15_3
 
 settings:
   base:
