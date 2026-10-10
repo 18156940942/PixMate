@@ -59,11 +59,13 @@ final class NikonPTPSession: NSObject, ObservableObject {
     override init() {
         super.init()
         browser.delegate = self
-        // browsedDeviceTypeMask 的类型是 ICDeviceTypeMask?（可空），
-        // 用 OptionSet 的 union 组合，避免 ICDeviceTypeMask(rawValue:) 的
-        // failable 初始化返回可空值。
-        browser.browsedDeviceTypeMask = ICDeviceTypeMask.camera
-            .union(ICDeviceTypeMask(rawValue: ICDeviceLocationTypeMask.local.rawValue))
+        // browsedDeviceTypeMask 的类型是 ICDeviceTypeMask?（可空）。
+        // ICDeviceTypeMask 本身是普通结构体（非 OptionSet，无 union），
+        // 用原始位或运算组合「相机」与「本地位置」两个掩码，
+        // 再经 failable init 构造。掩码常量合法，故用 ?? .camera 兜底。
+        let maskBits = ICDeviceTypeMask.camera.rawValue
+            | ICDeviceLocationTypeMask.local.rawValue
+        browser.browsedDeviceTypeMask = ICDeviceTypeMask(rawValue: maskBits) ?? .camera
     }
 
     // MARK: 生命周期
@@ -308,16 +310,6 @@ extension NikonPTPSession: ICDeviceBrowserDelegate {
                                    moreGoing: Bool) {
         Task { @MainActor in self.detach(device) }
     }
-
-    /// 本地设备全部枚举完毕。协议里是可选方法，但实现它能让「搜不到相机」
-    /// 这种情况有明确落点，不至于一直停在 .searching。
-    nonisolated func deviceBrowserDidEnumerateLocalDevices(_ browser: ICDeviceBrowser) {
-        Task { @MainActor in
-            if case .searching = self.phase {
-                self.log("本地设备枚举结束，未发现相机")
-            }
-        }
-    }
 }
 
 // MARK: - 设备级代理
@@ -387,9 +379,34 @@ extension NikonPTPSession: ICCameraDeviceDelegate {
         }
     }
 
+    /// 数组版 —— 协议要求的另一个重载，实际回调以单元素版为主。
+    nonisolated func cameraDevice(_ camera: ICCameraDevice, didAdd items: [ICCameraItem]) {
+        Task { @MainActor in
+            for case let file as ICCameraFile in items {
+                self.log("相机上报新文件：\(file.name ?? "?")")
+                self.onNewFile?(file)
+            }
+        }
+    }
+
     nonisolated func cameraDevice(_ camera: ICCameraDevice, didRemove item: ICCameraItem) {
         Task { @MainActor in
             self.log("相机移除文件：\(item.name ?? "?")")
+        }
+    }
+
+    nonisolated func cameraDevice(_ camera: ICCameraDevice, didRemove items: [ICCameraItem]) {
+        Task { @MainActor in
+            self.log("相机移除 \(items.count) 个文件")
+        }
+    }
+
+    nonisolated func cameraDevice(_ camera: ICCameraDevice,
+                                  didCompleteDeleteFilesWithError error: (any Error)?) {
+        Task { @MainActor in
+            if let error {
+                self.log("相机删除文件失败：\(error.localizedDescription)")
+            }
         }
     }
 
@@ -469,6 +486,8 @@ final class CameraFileDownloader: NSObject, ICCameraDeviceDownloadDelegate {
 
         let options: [ICDownloadOption: Any] = [
             .downloadsDirectoryURL: directory as NSURL,
+            // saveAsFilename：指定落盘文件名（savedFilename 是「读」实际名字用的）
+            .saveAsFilename: url.lastPathComponent as NSString,
             .overwrite: NSNumber(value: true)
         ]
 
@@ -483,11 +502,13 @@ final class CameraFileDownloader: NSObject, ICCameraDeviceDownloadDelegate {
                                error: (any Error)?,
                                options: [String: Any],
                                contextInfo: UnsafeMutableRawPointer?) {
-        // 真实文件名来自 options 里的 ICDownloadOptionFilenameKey，
-        // 拿不到就退回相机原始文件名。
+        // 回调里取「实际落盘名」：协议字典的键是 savedFilename 的 rawValue。
+        // 取不到就退回相机原始文件名。
         var name = file.name ?? "unknown"
-        if let saved = options[ICDownloadOption.savedFileNameKey.rawValue] as? String, !saved.isEmpty {
+        if let saved = options[ICDownloadOption.savedFilename.rawValue] as? String, !saved.isEmpty {
             name = saved
+        } else if let asked = options[ICDownloadOption.saveAsFilename.rawValue] as? String, !asked.isEmpty {
+            name = asked
         }
         let directory = destinationDirectory ?? URL(fileURLWithPath: NSTemporaryDirectory())
         let landed = directory.appendingPathComponent(name)
