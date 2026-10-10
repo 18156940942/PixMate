@@ -1,0 +1,26 @@
+# Xcode 构建产物
+build/
+DerivedData/
+*.ipa
+*.dSYM.zip
+*.xcarchive
+
+# XcodeGen 在构建时生成，不入库
+*.xcodeproj
+*.xcworkspace
+PixMate/Resources/Info.plist
+
+# Xcode 用户数据
+xcuserdata/
+*.xcscmblueprint
+*.xccheckout
+
+# 本地签名材料，绝对不要提交
+*.mobileprovision
+*.p12
+*.cer
+
+# macOS / Windows 杂项
+.DS_Store
+Thumbs.db
+desktop.ini

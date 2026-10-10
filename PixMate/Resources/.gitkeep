@@ -1,0 +1,3 @@
+这个目录用于存放 XcodeGen 在构建时自动生成的 Info.plist。
+XcodeGen 的 info.path 指向 PixMate/Resources/Info.plist，构建时会写入此目录。
+保留本文件只是为了让 git 追踪这个空目录。
