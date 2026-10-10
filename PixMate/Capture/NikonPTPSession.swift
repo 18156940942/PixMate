@@ -59,9 +59,11 @@ final class NikonPTPSession: NSObject, ObservableObject {
     override init() {
         super.init()
         browser.delegate = self
-        browser.browsedDeviceTypeMask = ICDeviceTypeMask(
-            rawValue: ICDeviceTypeMask.camera.rawValue | ICDeviceLocationTypeMask.local.rawValue
-        )
+        // browsedDeviceTypeMask 的类型是 ICDeviceTypeMask?（可空），
+        // 用 OptionSet 的 union 组合，避免 ICDeviceTypeMask(rawValue:) 的
+        // failable 初始化返回可空值。
+        browser.browsedDeviceTypeMask = ICDeviceTypeMask.camera
+            .union(ICDeviceTypeMask(rawValue: ICDeviceLocationTypeMask.local.rawValue))
     }
 
     // MARK: 生命周期
@@ -303,8 +305,18 @@ extension NikonPTPSession: ICDeviceBrowserDelegate {
 
     nonisolated func deviceBrowser(_ browser: ICDeviceBrowser,
                                    didRemove device: ICDevice,
-                                   moreComing: Bool) {
+                                   moreGoing: Bool) {
         Task { @MainActor in self.detach(device) }
+    }
+
+    /// 本地设备全部枚举完毕。协议里是可选方法，但实现它能让「搜不到相机」
+    /// 这种情况有明确落点，不至于一直停在 .searching。
+    nonisolated func deviceBrowserDidEnumerateLocalDevices(_ browser: ICDeviceBrowser) {
+        Task { @MainActor in
+            if case .searching = self.phase {
+                self.log("本地设备枚举结束，未发现相机")
+            }
+        }
     }
 }
 
@@ -317,13 +329,9 @@ extension NikonPTPSession: ICDeviceBrowserDelegate {
 
 extension NikonPTPSession: ICDeviceDelegate {
 
-    nonisolated func deviceDidBecomeReady(_ device: ICDevice) {
-        Task { @MainActor in
-            self.sessionOpenedAt = Date()
-            self.phase = .ready(self.modelName)
-            self.log("会话就绪")
-        }
-    }
+    // 注意：deviceDidBecomeReady 的现代签名是
+    // deviceDidBecomeReady(withCompleteContentCatalog:)，
+    // 属于 ICCameraDeviceDelegate，已在上面的相机代理扩展里实现。
 
     nonisolated func device(_ device: ICDevice, didOpenSessionWithError error: Error?) {
         Task { @MainActor in
@@ -379,6 +387,46 @@ extension NikonPTPSession: ICCameraDeviceDelegate {
         }
     }
 
+    nonisolated func cameraDevice(_ camera: ICCameraDevice, didRemove item: ICCameraItem) {
+        Task { @MainActor in
+            self.log("相机移除文件：\(item.name ?? "?")")
+        }
+    }
+
+    /// 相机内容编目完成，可以开始下发请求了。
+    nonisolated func deviceDidBecomeReady(withCompleteContentCatalog device: ICCameraDevice) {
+        Task { @MainActor in
+            self.sessionOpenedAt = Date()
+            self.phase = .ready(self.modelName)
+            self.log("会话就绪，相机内容已编目")
+        }
+    }
+
+    nonisolated func cameraDevice(_ camera: ICCameraDevice, didRenameItems items: [ICCameraItem]) {
+        Task { @MainActor in
+            self.log("相机重命名了 \(items.count) 个文件")
+        }
+    }
+
+    nonisolated func cameraDevice(_ camera: ICCameraDevice,
+                                  didReceiveThumbnail thumbnail: CGImage?,
+                                  for item: ICCameraItem,
+                                  error: (any Error)?) {
+        // 缩略图不是本项目的主路径（我们用 PTP 实时取景），收到只记一笔
+        Task { @MainActor in
+            if let error {
+                self.log("缩略图失败：\(error.localizedDescription)")
+            }
+        }
+    }
+
+    nonisolated func cameraDevice(_ camera: ICCameraDevice,
+                                  didReceiveMetadata metadata: [AnyHashable: Any]?,
+                                  for item: ICCameraItem,
+                                  error: (any Error)?) {
+        // 同上，元数据按需在下载链路里读
+    }
+
     nonisolated func cameraDevice(_ camera: ICCameraDevice,
                                   didReceivePTPEvent eventData: Data) {
         Task { @MainActor in self.onPTPEvent?(eventData) }
@@ -387,58 +435,68 @@ extension NikonPTPSession: ICCameraDeviceDelegate {
     nonisolated func cameraDeviceDidChangeCapability(_ camera: ICCameraDevice) {
         Task { @MainActor in self.log("设备能力发生变化") }
     }
+
+    nonisolated func cameraDeviceDidEnableAccessRestriction(_ device: ICDevice) {
+        Task { @MainActor in self.log("设备进入受限状态（可能是锁屏）") }
+    }
+
+    nonisolated func cameraDeviceDidRemoveAccessRestriction(_ device: ICDevice) {
+        Task { @MainActor in self.log("设备已解除受限") }
+    }
 }
 
 // MARK: - 文件下载
 
-/// 用 ICDownloadsDelegate 把相机文件落到指定路径。
-/// contextInfo 只能传裸指针，所以用一个 objc 小盒子承载目标路径。
-final class CameraFileDownloader: NSObject, ICDownloadsDelegate {
+/// 用 ICCameraDeviceDownloadDelegate 把相机文件落到指定路径。
+///
+/// 注意：ICDownloadOption 没有「指定输出文件名」这一项 ——
+/// 它只接受 downloadsDirectoryURL（落盘目录），文件名由相机决定。
+/// 所以这里约定：调用方给的 url 只取父目录，最终文件名 = 相机原始文件名。
+/// 回调里把真实落盘路径回传给上层。
+final class CameraFileDownloader: NSObject, ICCameraDeviceDownloadDelegate {
 
     /// 下载完成：(文件, 落盘路径, 错误)
     var onComplete: ((ICCameraFile, URL, Error?) -> Void)?
     /// 下载进度：(文件, 已下载字节, 总字节)
     var onProgress: ((ICCameraFile, Int64, Int64) -> Void)?
 
+    /// 落盘目录（由最近一次 request 决定），用于回调时拼真实路径
+    private var destinationDirectory: URL?
+
     func request(file: ICCameraFile, to url: URL, on device: ICCameraDevice) {
-        // 落盘位置由「目录 + 文件名」两个键决定，不是直接给完整路径
+        let directory = url.deletingLastPathComponent()
+        destinationDirectory = directory
+
         let options: [ICDownloadOption: Any] = [
-            .downloadsDirectoryURL: url.deletingLastPathComponent() as NSURL,
-            .savedFileName: url.lastPathComponent as NSString,
+            .downloadsDirectoryURL: directory as NSURL,
             .overwrite: NSNumber(value: true)
         ]
-        let context = UnsafeMutableRawPointer(
-            Unmanaged.passRetained(DownloadBox(url: url)).toOpaque()
-        )
+
         device.requestDownloadFile(file,
                                    options: options,
                                    downloadDelegate: self,
                                    didDownloadSelector: #selector(didDownloadFile(_:error:options:contextInfo:)),
-                                   contextInfo: context)
+                                   contextInfo: nil)
     }
 
     @objc func didDownloadFile(_ file: ICCameraFile,
-                               error: Error?,
-                               options: [ICDownloadOption: Any],
+                               error: (any Error)?,
+                               options: [String: Any],
                                contextInfo: UnsafeMutableRawPointer?) {
-        var destination: URL?
-        if let context {
-            let box = Unmanaged<DownloadBox>.fromOpaque(context).takeRetainedValue()
-            destination = box.url
+        // 真实文件名来自 options 里的 ICDownloadOptionFilenameKey，
+        // 拿不到就退回相机原始文件名。
+        var name = file.name ?? "unknown"
+        if let saved = options[ICDownloadOption.savedFileNameKey.rawValue] as? String, !saved.isEmpty {
+            name = saved
         }
-        guard let destination else { return }
-        onComplete?(file, destination, error)
+        let directory = destinationDirectory ?? URL(fileURLWithPath: NSTemporaryDirectory())
+        let landed = directory.appendingPathComponent(name)
+        onComplete?(file, landed, error)
     }
 
-    @objc func didReceiveDownloadProgressForFile(_ file: ICCameraFile,
-                                                 downloadedBytes: off_t,
-                                                 maxBytes: off_t) {
+    @objc func didReceiveDownloadProgress(for file: ICCameraFile,
+                                          downloadedBytes: off_t,
+                                          maxBytes: off_t) {
         onProgress?(file, Int64(downloadedBytes), Int64(maxBytes))
-    }
-
-    /// 承载 contextInfo 的小盒子
-    final class DownloadBox: NSObject {
-        let url: URL
-        init(url: URL) { self.url = url }
     }
 }

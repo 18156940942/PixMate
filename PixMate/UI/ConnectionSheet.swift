@@ -113,11 +113,11 @@ struct ConnectionSheet: View {
                 }
 
                 Section("如果连不上") {
-                    BulletRow("换一根数据线重试——这是最常见的原因")
-                    BulletRow("确认相机没被其他软件占用（Lightroom、Captur One 等先退出）")
-                    BulletRow("iPhone / iPad 的「文件与文件夹」权限是否给了本 App")
-                    BulletRow("相机重启一次，再重新插线")
-                    BulletRow("Z6II 的实时取景分辨率为 1024×680，画面不清晰是正常的，它只是取景预览")
+                    BulletRow(text: "换一根数据线重试——这是最常见的原因")
+                    BulletRow(text: "确认相机没被其他软件占用（Lightroom、Captur One 等先退出）")
+                    BulletRow(text: "iPhone / iPad 的「文件与文件夹」权限是否给了本 App")
+                    BulletRow(text: "相机重启一次，再重新插线")
+                    BulletRow(text: "Z6II 的实时取景分辨率为 1024×680，画面不清晰是正常的，它只是取景预览")
                 }
 
                 Section {

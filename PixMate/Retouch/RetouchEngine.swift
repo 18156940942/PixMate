@@ -377,9 +377,11 @@ final class RetouchEngine {
         guard params.blemishRemoval > 0.001,
               let skinMask = faceMask(face, size: size) else { return image }
 
-        let filter = CIFilter.medianFilter()
+        // CIMedian 是固定的 3×3 核，没有 radius 参数。
+        // 想控制「力度」就调蒙版强度（下面 scaleMask 的那一项），
+        // 这样效果可调，又不会糊掉整片皮肤。
+        let filter = CIFilter.median()
         filter.inputImage = image.clampedToExtent()
-        filter.radius = Float(3 + params.blemishRemoval * 4)
 
         guard let median = filter.outputImage else { return image }
 

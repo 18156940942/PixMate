@@ -137,13 +137,54 @@ enum PersonMasker {
         mask = mask.transformed(by: CGAffineTransform(scaleX: target.width / extent.width,
                                                       y: target.height / extent.height))
 
-        let box = observation.boundingBox
-        let normalizedBox = CGRect(x: box.minX,
-                                   y: 1 - box.maxY,
-                                   width: box.width,
-                                   height: box.height)
+        // VNPixelBufferObservation 不提供 boundingBox（那是 VNDetectedObjectObservation
+        // 才有的），所以直接从蒙版本身求人体外接框 —— 反而更贴合真实轮廓。
+        let normalizedBox = boundingBox(ofMask: mask,
+                                        extent: extent,
+                                        context: context)
 
         return Result(personMask: mask.cropped(to: target), boundingBox: normalizedBox)
+    }
+
+    /// 扫描蒙版像素，找出亮度 > 阈值 的范围，返回归一化矩形（左上原点）。
+    private static func boundingBox(ofMask mask: CIImage,
+                                    extent: CGRect,
+                                    context: CIContext) -> CGRect? {
+        let width = Int(extent.width)
+        let height = Int(extent.height)
+        guard width > 0, height > 0 else { return nil }
+
+        var pixels = [UInt8](repeating: 0, count: width * height)
+        context.render(mask,
+                       toBitmap: &pixels,
+                       rowBytes: width,
+                       bounds: extent,
+                       format: .L8,
+                       colorSpace: nil)
+
+        // 阈值取 0.5 左右：分割输出是概率图，>127 视为「是人」
+        let threshold: UInt8 = 127
+        var minX = width, minY = height, maxX = -1, maxY = -1
+
+        for y in 0..<height {
+            let row = y * width
+            for x in 0..<width where pixels[row + x] > threshold {
+                if x < minX { minX = x }
+                if x > maxX { maxX = x }
+                if y < minY { minY = y }
+                if y > maxY { maxY = y }
+            }
+        }
+
+        guard maxX >= minX, maxY >= minY else { return nil }
+
+        // CI 的 y 轴向上，转成「左上原点」需要翻转
+        let x0 = CGFloat(minX) / CGFloat(width)
+        let x1 = CGFloat(maxX + 1) / CGFloat(width)
+        let y0 = CGFloat(height - 1 - maxY) / CGFloat(height)
+        let y1 = CGFloat(height - minY) / CGFloat(height)
+
+        return CGRect(x: x0, y: y0, width: x1 - x0, height: y1 - y0)
     }
 }
 

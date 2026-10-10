@@ -14,6 +14,16 @@ struct MonitorView: View {
 
     private var isWide: Bool { sizeClass == .regular }
 
+    /// env.coach 是 let 常量（CoachPipeline 是引用类型），
+    /// 不能直接对它取 $env.coach.selectedPose —— 那要求 coach 可被替换。
+    /// 这里手工构造一个指向其内部属性的绑定。
+    private var selectedPoseBinding: Binding<PoseSuggestion?> {
+        Binding(
+            get: { env.coach.selectedPose },
+            set: { env.coach.selectedPose = $0 }
+        )
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             StatusStrip(showingConnection: $showingConnection)
@@ -24,7 +34,7 @@ struct MonitorView: View {
 
                 if isWide {
                     Divider().overlay(Color.white.opacity(0.08))
-                    AdvicePanel(coach: env.coach, selectedPose: $env.coach.selectedPose)
+                    AdvicePanel(coach: env.coach, selectedPose: selectedPoseBinding)
                         .frame(width: 320)
                 }
             }
@@ -54,7 +64,7 @@ struct MonitorView: View {
         }
         .sheet(isPresented: $showingAdviceSheet) {
             NavigationStack {
-                AdvicePanel(coach: env.coach, selectedPose: $env.coach.selectedPose)
+                AdvicePanel(coach: env.coach, selectedPose: selectedPoseBinding)
                     .environmentObject(env)
                     .navigationTitle("实时参谋")
                     .navigationBarTitleDisplayMode(.inline)

@@ -179,7 +179,7 @@ struct PoseSuggestion: Identifiable, Hashable, Sendable {
 
 // MARK: - 叠加层开关
 
-struct OverlayOptions: Equatable {
+struct OverlayOptions: Codable, Equatable {
     var showThirds: Bool = true
     var showHorizon: Bool = true
     var showSkeleton: Bool = true

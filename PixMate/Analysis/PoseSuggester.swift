@@ -266,7 +266,7 @@ final class OpenAICompatiblePoseProvider: PoseVisionProvider {
         }
 
         let content = try extractContent(from: data)
-        return try parse(content)
+        return try parse(content, scene: scene)
     }
 
     // MARK: 解析
@@ -281,7 +281,7 @@ final class OpenAICompatiblePoseProvider: PoseVisionProvider {
         return content
     }
 
-    private func parse(_ content: String) throws -> [PoseSuggestion] {
+    private func parse(_ content: String, scene: SceneContext) throws -> [PoseSuggestion] {
         // 模型偶尔会包一层 ```json，先剥掉
         let cleaned = content
             .replacingOccurrences(of: "```json", with: "")
