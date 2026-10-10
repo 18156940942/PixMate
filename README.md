@@ -191,8 +191,12 @@ PixMate/
 | 1 | `NikonPTPSession.triggerCapture` | 按快门没反应 | `0x9207` 带两个参数，部分固件只认一个或不带。看日志里的返回码：`0x2006` = 参数不对 |
 | 2 | `NikonLiveViewFrame.parse` | 只有第一帧能显示，之后全黑 | 一帧 JPEG 被分包了。连着取几次直到字节流以 `FFD9` 结尾再解码 |
 | 3 | 参数选择器最后一栏 | 显示的档位和机身菜单对不上 | 打开任意参数 → 「诊断信息」会同时显示原始值和档位数量，对着机身核一遍，把 `NikonValueFormatting` 里的换算改掉 |
-| 4 | `ICCameraDeviceDelegate` 那几个方法 | 编译报 conformance 错，或连上但收不到新文件事件 | `@objc` 可选方法的 Swift 签名在 SDK 版本间偶有变化，对着 Xcode 里的协议定义改方法名即可 |
+| 4 | `ICCameraDeviceDelegate` 那几个方法 | 编译报 conformance 错，或连上但收不到新文件事件 | 委托方法已统一写成 `nonisolated` + 手动跳回主 actor（见下方说明）。若 SDK 又改了方法签名，编译会直接报 conformance 错，对着 Xcode 里的协议定义改即可 |
 | 5 | `NikonPTPSession.startLiveView` | 开不了实时取景 | 代码先按带参数 `[0]` 发，被拒自动退回无参形式。日志里能看到走了哪条 |
+
+**关于第 4 条的并发写法，值得单独说一句。** `NikonPTPSession` 是 `@MainActor` 的类，而 `ICDeviceDelegate` / `ICCameraDeviceDelegate` 是没有任何并发标注的 ObjC 协议。这种情况下 Swift 编译器会**隐式推断**两者隔离一致、静默放行——但 ObjC 运行时不理会这个推断。一旦 ImageCaptureCore 在后台线程回调，就会踩到主 actor 的状态而崩溃。
+
+所以这些委托方法必须显式写 `nonisolated`，内部再 `Task { @MainActor in ... }` 跳回来。同一个道理，`CoachPipeline` 的 Vision 计算也改成了在 `nonisolated static analyze(_:)` 里跑后台、用 `Sendable` 的 `CoachAnalysis` 把结果带回主线程——而不是把 `UIImage` 直接跨 actor 传。
 
 **参数档位这件事说明一下**：ISO / 快门 / 光圈在 PTP 里都是裸数字，`NikonValueFormatting` 里的换算是按公开资料写的，和机身屏幕上的字未必一一对应。所以我的做法是——**表里有的就翻译，没见过的就老实显示原始数值，不猜**。你对着机身核一轮，把表补全，之后就准了。
 
