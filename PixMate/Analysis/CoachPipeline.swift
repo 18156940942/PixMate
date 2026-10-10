@@ -69,25 +69,32 @@ final class CoachPipeline: ObservableObject {
         // Vision 跑在缩小图上：构图判断不需要 4000 万像素
         let probe = frame.scaled(toMaxDimension: 720)
 
+        // 计算放在 nonisolated 静态方法里跑后台，结果回主 actor 更新 UI。
+        // 这样并发语义是明确的，也不用把 UIImage 之类跨 actor 传递。
         Task.detached(priority: .userInitiated) { [weak self] in
-            guard let self else { return }
-
-            let people = BodyPoseAnalyzer.detect(probe)
-            let faces = FaceAnalyzer.analyze(probe)
-            let report = CompositionAdvisor.evaluate(image: probe, people: people, faces: faces)
-            let brightness = CompositionAdvisor.averageBrightness(probe) ?? 0.5
-
-            await self.apply(people: people,
-                             faces: faces,
-                             report: report,
-                             brightness: brightness)
+            let result = CoachPipeline.analyze(probe)
+            await self?.apply(result)
         }
     }
 
-    private func apply(people: [DetectedPerson],
-                       faces: [FaceGeometry],
-                       report: CompositionReport,
-                       brightness: Double) {
+    /// 纯计算，不碰任何实例状态，可以安全地在后台线程跑。
+    nonisolated static func analyze(_ image: UIImage) -> CoachAnalysis {
+        let people = BodyPoseAnalyzer.detect(image)
+        let faces = FaceAnalyzer.analyze(image)
+        let report = CompositionAdvisor.evaluate(image: image, people: people, faces: faces)
+        let brightness = CompositionAdvisor.averageBrightness(image) ?? 0.5
+        return CoachAnalysis(people: people,
+                             faces: faces,
+                             report: report,
+                             brightness: brightness)
+    }
+
+    private func apply(_ result: CoachAnalysis) {
+        let people = result.people
+        let faces = result.faces
+        let report = result.report
+        let brightness = result.brightness
+
         self.people = people
         self.faces = faces
         self.report = report

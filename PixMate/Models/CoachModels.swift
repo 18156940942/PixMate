@@ -5,7 +5,7 @@ import CoreGraphics
 
 /// 人体骨架的一个关节。坐标**归一化到整帧**（0…1，左上为原点），
 /// Vision 的原生坐标系是左下原点，转换在 PersonDetector 里完成。
-struct SkeletonJoint: Identifiable, Hashable {
+struct SkeletonJoint: Identifiable, Hashable, Sendable {
     var id: String
     var point: CGPoint
     var confidence: Float
@@ -14,7 +14,7 @@ struct SkeletonJoint: Identifiable, Hashable {
 }
 
 /// 一帧里检测到的一个人
-struct DetectedPerson: Identifiable, Hashable {
+struct DetectedPerson: Identifiable, Hashable, Sendable {
     var id = UUID()
     /// 归一化的人体外接框（左上原点）
     var boundingBox: CGRect
@@ -79,7 +79,7 @@ enum AdviceSeverity {
 /// 一条**可执行**的构图建议。
 /// 刻意不做成「打个 78 分」——那个分数没法指导拍摄。
 /// 每条都必须能翻译成一句立刻能做的动作。
-struct CompositionIssue: Identifiable, Hashable {
+struct CompositionIssue: Identifiable, Hashable, Sendable {
     var id = UUID()
     var title: String
     var detail: String
@@ -89,7 +89,7 @@ struct CompositionIssue: Identifiable, Hashable {
     var anchor: CGPoint?
 }
 
-struct CompositionReport: Equatable {
+struct CompositionReport: Equatable, Sendable {
     /// 综合分只作为进度参考，UI 上不作为主信息
     var score: Int = 0
     var issues: [CompositionIssue] = []
@@ -114,7 +114,7 @@ struct CompositionReport: Equatable {
 // MARK: - 姿势分类
 
 /// 姿势库的六个大类，筛选条直接用。
-enum PoseCategory: String, CaseIterable, Hashable {
+enum PoseCategory: String, CaseIterable, Hashable, Sendable {
     case standing
     case sitting
     case leaning
@@ -136,7 +136,7 @@ enum PoseCategory: String, CaseIterable, Hashable {
 
 // MARK: - 姿势建议
 
-enum PoseSource: String, Codable {
+enum PoseSource: String, Codable, Sendable {
     /// 本地姿势库 —— 零延迟、离线可用
     case library
     /// 多模态模型按画面里实际景色现场生成
@@ -156,7 +156,7 @@ enum PoseSource: String, Codable {
 /// 一条姿势建议。
 /// `normalizedJoints` 的坐标是**相对人体外接框**的（0…1），
 /// 所以能直接套到画面里检测到的任意一个人身上。
-struct PoseSuggestion: Identifiable, Hashable {
+struct PoseSuggestion: Identifiable, Hashable, Sendable {
     var id = UUID()
     var title: String
     /// 给模特听的提示语，一句话
@@ -186,4 +186,15 @@ struct OverlayOptions: Equatable {
     var showPoseGhost: Bool = true
     var showFaceBoxes: Bool = false
     var showAdvice: Bool = true
+}
+
+// MARK: - 一帧分析的结果
+
+/// 后台线程算完、回主线程更新 UI 的载体。
+/// 全部由值类型组成，所以可以安全跨 actor 传递（Sendable）。
+struct CoachAnalysis: Sendable {
+    var people: [DetectedPerson] = []
+    var faces: [FaceGeometry] = []
+    var report = CompositionReport()
+    var brightness: Double = 0.5
 }

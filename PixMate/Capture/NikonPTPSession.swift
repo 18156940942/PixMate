@@ -291,6 +291,10 @@ final class NikonPTPSession: NSObject, ObservableObject {
 
 extension NikonPTPSession: ICDeviceBrowserDelegate {
 
+    // 这几个委托方法必须是 nonisolated：@objc 协议方法不能带 actor 隔离。
+    // 但 ImageCaptureCore 并不保证在哪个线程回调，所以内部再显式跳回主 actor。
+    // 反过来若直接写成主 actor 方法，编译器会「隐式隔离一致」静默放行，
+    // 而 ObjC 运行时不理会这个推断 —— 后台线程回调时会崩。
     nonisolated func deviceBrowser(_ browser: ICDeviceBrowser,
                                    didAdd device: ICDevice,
                                    moreComing: Bool) {

@@ -229,7 +229,7 @@ enum CompositionAdvisor {
 
 /// 从一帧画面里能可靠得到的场景信息。
 /// 注意：不猜「室内还是室外」——那是猜不准的，交给多模态模型去做。
-struct SceneContext {
+struct SceneContext: Sendable {
     var personCount: Int = 0
     var brightness: Double = 0.5
     var faceCount: Int = 0

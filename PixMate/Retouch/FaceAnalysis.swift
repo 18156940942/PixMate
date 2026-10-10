@@ -9,7 +9,7 @@ import UIKit
 // 这里统一转成「归一化 + 左上原点」，因为 Core Graphics 和 UI 都是这个习惯，
 // 转换只在这一个地方做，后面所有人都不用再操心坐标系。
 
-struct FaceGeometry {
+struct FaceGeometry: Sendable {
     /// 人脸外接框（归一化，左上原点）
     var faceBox: CGRect
     /// 以下都是归一化到整图的点序列（左上原点）
