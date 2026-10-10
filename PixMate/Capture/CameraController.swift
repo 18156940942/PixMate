@@ -175,14 +175,24 @@ final class CameraController: ObservableObject {
 
         liveTask = Task { [weak self] in
             guard let self else { return }
+            // 开取景前先探一次相机就绪状态。DeviceReady 不过就直接开，
+            // 相机大概率会用 DeviceBusy 拒掉，早点给出明确提示好过干等。
+            let ready = await self.session.probeDeviceReady()
+            if !ready {
+                self.lastError = "相机暂时忙（可能在对焦或写卡），正在重试…"
+                self.session.log("开取景前 DeviceReady 未通过，仍继续尝试")
+            }
+
             do {
                 try await self.session.startLiveView()
             } catch {
-                self.lastError = "开启实时取景失败：\(error.localizedDescription)"
-                self.session.log("StartLiveView 失败：\(error.localizedDescription)")
+                let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                self.lastError = "开启实时取景失败：\(message)"
+                self.session.log("StartLiveView 失败：\(message)")
                 self.liveTask = nil
                 return
             }
+            self.lastError = nil
             await self.runLiveViewLoop()
         }
     }
@@ -202,6 +212,9 @@ final class CameraController: ObservableObject {
         let targetInterval: TimeInterval = 1.0 / 20.0
         var framesInWindow = 0
         var windowStart = Date()
+        // 连续多次取不到帧就停 —— 说明协议层有问题，继续转只是空烧电。
+        // 停掉后 UI 上的「取景诊断」会把原因显示出来。
+        var consecutiveMisses = 0
 
         while !Task.isCancelled, session.isLiveViewRunning {
             if link == .phone { break }
@@ -215,6 +228,16 @@ final class CameraController: ObservableObject {
                     frameSink?(image)
                 }
                 framesInWindow += 1
+                consecutiveMisses = 0
+            } else {
+                consecutiveMisses += 1
+                // 约 6 秒仍未拿到任何一帧，就放弃并给出明确提示
+                if consecutiveMisses > 120 {
+                    lastError = "取不到取景画面，实时取景已停止。请查看「取景诊断」并导出日志。"
+                    session.log("连续 \(consecutiveMisses) 次取帧失败，退出取景循环")
+                    finishLoopFromInside()
+                    break
+                }
             }
 
             let elapsed = Date().timeIntervalSince(began)
@@ -228,6 +251,13 @@ final class CameraController: ObservableObject {
             let wait = max(0.004, targetInterval - elapsed)
             try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
         }
+    }
+
+    /// 循环内部收尾（不能直接调 stopLiveView，会把当前 Task 取消掉）
+    private func finishLoopFromInside() {
+        liveTask = nil
+        liveViewFPS = 0
+        Task { await session.stopLiveView() }
     }
 
     // MARK: 拍摄

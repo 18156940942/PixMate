@@ -56,11 +56,39 @@ struct ConnectionSheet: View {
                         }
                         .disabled(env.camera.session.isLiveViewRunning)
 
+                        if env.camera.session.isLiveViewRunning {
+                            Label("实时取景运行中 · 已收到 \(env.camera.session.liveViewFrameCount) 帧",
+                                  systemImage: "checkmark.circle")
+                                .font(.footnote)
+                                .foregroundStyle(Color(red: 0.24, green: 0.86, blue: 0.62))
+                        }
+
                         Button(role: .destructive) {
                             env.camera.disconnect()
                         } label: {
                             Label("断开连接", systemImage: "xmark.circle")
                         }
+                    }
+                }
+
+                // 取景诊断：只在「已连上但还没有画面」时出现。
+                // 这是真机上最需要的一块 —— 告诉你到底卡在协议哪一步。
+                if env.camera.link.isTethering && env.camera.liveViewFPS == 0 {
+                    Section {
+                        if !env.camera.session.isLiveViewRunning {
+                            BulletRow(text: "还没有开启实时取景 —— 点上面的「开启实时取景」")
+                        } else if env.camera.session.liveViewFetchFailures > 0 {
+                            BulletRow(text: "取景命令被相机拒绝（已失败 \(env.camera.session.liveViewFetchFailures) 次）")
+                            BulletRow(text: "多半是协议入参问题，请把下面的诊断日志导出发给开发者")
+                        } else if env.camera.session.liveViewParseFailures > 0 {
+                            BulletRow(text: "收到数据但解不出 JPEG（\(env.camera.session.liveViewParseFailures) 次）")
+                            BulletRow(text: "相机已经在出帧，只是数据头长度需要调整")
+                        } else {
+                            BulletRow(text: "正在等待相机出第一帧…")
+                            BulletRow(text: "若长时间没反应，检查相机是否在拍摄模式、USB 是否为 MTP/PTP")
+                        }
+                    } header: {
+                        Text("取景诊断")
                     }
                 }
 

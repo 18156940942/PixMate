@@ -8,6 +8,10 @@ import UIKit
 ///
 /// 最稳的剥法不是「砍掉前 N 字节」——固件一变 N 就变了——
 /// 而是直接在字节流里找 JPEG 的 SOI（FF D8 FF）和 EOI（FF D9）。
+///
+/// ⚠️ 真机补充：Z6II 的实时取景帧**可能不含 EOI**（相机为压带宽会截尾），
+/// 这种情况下靠 SOI 之后的 SOF0 段读尺寸、并一直取到数据末尾即可，
+/// 不要因为找不到 FFD9 就整帧丢弃。
 enum NikonLiveViewFrame {
 
     struct Frame {
@@ -22,6 +26,8 @@ enum NikonLiveViewFrame {
     static func parse(_ raw: Data) -> Frame? {
         let bytes = [UInt8](PTPPayload.strip(raw))
         guard let soi = findSOI(bytes) else { return nil }
+
+        // EOI 找不到时不要放弃 —— 截到末尾即可，JPEG 解码器能容忍缺尾部标记。
         let eoi = findEOI(bytes, from: soi) ?? (bytes.count - 1)
         guard eoi > soi + 4 else { return nil }
 

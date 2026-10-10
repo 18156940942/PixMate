@@ -111,6 +111,13 @@ enum CameraPropertyCode: UInt32 {
 /// 参考开源实现（libgphoto2 的 nikon 后端）——但**入参格式必须真机校准**，
 /// 不同固件版本对同一操作码的参数解释可能不同，见 README 第六节。
 enum NikonOpCode: UInt16 {
+    /// 设备就绪查询。**必须先发它，且必须返回 0x2001(OK)**，
+    /// 否则后续任何实时取景命令都会被相机用 0x2019(DeviceBusy) 拒掉。
+    /// 注意：0x90C7 是 DeviceReady，0x90C8 才是 GetEvent —— 两者极易写反。
+    case deviceReady         = 0x90C7
+    /// 取事件（新文件、参数变更）。
+    case getEvent            = 0x90C8
+
     /// 进入 / 退出实时取景
     case startLiveView       = 0x9201
     case endLiveView         = 0x9202
@@ -131,10 +138,6 @@ enum NikonOpCode: UInt16 {
     case getPTPIPInfo        = 0x943C
     /// 自动对焦驱动
     case afDrive             = 0x92C1
-    /// 取事件（新文件、参数变更）
-    case getEvent            = 0x90C7
-    /// 会话就绪问答
-    case deviceReady         = 0x90C8
 }
 
 /// 尼康应用模式

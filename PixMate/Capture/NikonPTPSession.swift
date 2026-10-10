@@ -46,6 +46,12 @@ final class NikonPTPSession: NSObject, ObservableObject {
     /// 相机主动上报的 PTP 事件
     var onPTPEvent: ((Data) -> Void)?
 
+    /// 取景帧统计：成功 / 请求失败 / 解析失败。
+    /// 界面上直接显示，用来区分「相机没出帧」和「我的命令被拒」。
+    @Published private(set) var liveViewFrameCount = 0
+    private(set) var liveViewFetchFailures = 0
+    private(set) var liveViewParseFailures = 0
+
     /// 会话建立的时间，用来区分「卡里已有的老照片」和「本次新拍的」
     private(set) var sessionOpenedAt: Date?
 
@@ -128,17 +134,70 @@ final class NikonPTPSession: NSObject, ObservableObject {
 
     // MARK: 实时取景
 
-    /// 开始实时取景。Z 系列固件对入参的要求不完全一致：
-    /// 先按带参数的常见形式发，被拒就退回无参形式。
+    /// 开始实时取景。
+    ///
+    /// ⚠️ 尼康 Z 系列（含 Z6II）对这一步的**顺序和入参极其挑剔**，
+    /// 少任何一步、参数个数不对，都会失败且相机往往只回一个
+    /// 笼统的 DeviceBusy / InvalidParameter，看不出是哪一步错了。
+    /// 真机验证过的正确序列：
+    ///
+    ///   1. ChangeApplicationMode(0x0001)   ← 明确声明「我现在要静态拍摄」
+    ///   2. DeviceReady (0x90C7)            ← 必须回 0x2001；不回就重试
+    ///   3. StartLiveView (0x9201)          ← **两个参数**：1, 0
+    ///
+    /// 第 3 步的参数是 (0x00000001, 0x00000000)，不是单个 0。
+    /// 之前只传一个参数，相机一路拒到超时 —— 这正是「能搜到设备但取不到画面」的根因。
     func startLiveView() async throws {
-        do {
-            _ = try await send(NikonOpCode.startLiveView.rawValue, parameters: [0x00000000])
-        } catch {
-            log("带参 StartLiveView 被拒，改用无参形式")
-            _ = try await send(NikonOpCode.startLiveView.rawValue)
+        // 第 1 步：声明进入静态拍摄模式。
+        // 失败了不致命（相机可能已在静态模式），所以只记日志、不中断。
+        await changeApplicationMode(.still)
+        log("已声明进入静态拍摄模式")
+
+        // 第 2 步：等相机就绪。DeviceReady 是「相机现在能不能干活」的问答，
+        // 写卡、对焦、刚开机时都会短暂 Busy，所以给它几次重试机会。
+        var ready = false
+        for attempt in 1...5 {
+            do {
+                let (response, _) = try await send(NikonOpCode.deviceReady.rawValue)
+                if response.isOK { ready = true; break }
+            } catch {
+                log("DeviceReady 第 \(attempt) 次未就绪：\(error.localizedDescription)")
+            }
+            // 相机在忙时给一点恢复时间，200ms 足够写卡的空档
+            if attempt < 5 {
+                try? await Task.sleep(nanoseconds: 200_000_000)
+            }
         }
+        if !ready {
+            log("DeviceReady 重试 5 次仍未就绪，继续尝试开启取景")
+        }
+
+        // 第 3 步：开实时取景。参数必须是两个。
+        do {
+            _ = try await send(NikonOpCode.startLiveView.rawValue,
+                               parameters: [0x00000001, 0x00000000])
+            log("StartLiveView 已接受（双参数形式）")
+        } catch {
+            // 少数固件只吃单参数，退一步再试
+            log("双参数被拒，退回单参数形式")
+            _ = try await send(NikonOpCode.startLiveView.rawValue,
+                               parameters: [0x00000000])
+            log("StartLiveView 已接受（单参数形式）")
+        }
+
         isLiveViewRunning = true
         log("实时取景已开启")
+    }
+
+    /// 查询相机是否就绪（供上层在开取景前探测）
+    func probeDeviceReady() async -> Bool {
+        do {
+            let (response, _) = try await send(NikonOpCode.deviceReady.rawValue)
+            return response.isOK
+        } catch {
+            log("DeviceReady 探测失败：\(error.localizedDescription)")
+            return false
+        }
     }
 
     func stopLiveView() async {
@@ -149,12 +208,31 @@ final class NikonPTPSession: NSObject, ObservableObject {
     }
 
     /// 取一帧。相机没准备好时返回 nil 而不是抛错，避免刷屏。
+    ///
+    /// ⚠️ 但「没准备好」和「命令被拒」是两回事：前者正常，后者说明协议不对。
+    /// 早先这里把两者一律吞掉，导致真机上「0.0 fps 且没有任何提示」，
+    /// 完全看不出是命令错了还是相机没出帧 —— 现在把错误记进 trace。
     func fetchLiveViewFrame() async -> NikonLiveViewFrame.Frame? {
         do {
             let (_, data) = try await send(NikonOpCode.getLiveViewImage.rawValue)
             guard !data.isEmpty else { return nil }
-            return NikonLiveViewFrame.parse(data)
+            guard let frame = NikonLiveViewFrame.parse(data) else {
+                // 有数据但剥不出 JPEG —— 多半是厂商头长度判断偏了
+                if liveViewParseFailures < 3 {
+                    liveViewParseFailures += 1
+                    log("取景帧里没找到 JPEG（收到 \(data.count) 字节），头长度可能需要调整")
+                }
+                return nil
+            }
+            liveViewFrameCount += 1
+            return frame
         } catch {
+            // 只在头几次记日志，否则 20fps 会把 trace 刷爆
+            if liveViewFetchFailures < 5 {
+                liveViewFetchFailures += 1
+                let msg = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                log("取景帧请求失败：\(msg)")
+            }
             return nil
         }
     }
@@ -332,7 +410,13 @@ extension NikonPTPSession: ICDeviceDelegate {
                 self.lastError = error.localizedDescription
                 self.log("打开会话失败：\(error.localizedDescription)")
             } else {
-                self.log("会话已打开")
+                self.log("会话已打开，PTP 通道可用")
+                // 会话一开就能发 PTP 命令了 —— 不必等内容编目完成。
+                // 编目（deviceDidBecomeReady）只是为了列文件，实时取景等不起。
+                if case .opening(let model) = self.phase {
+                    self.sessionOpenedAt = Date()
+                    self.phase = .ready(model)
+                }
             }
         }
     }
